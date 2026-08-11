@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { getStore } = require('@netlify/blobs');
+const { getStore, connectLambda } = require('@netlify/blobs');
 
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -46,6 +46,9 @@ function getRoute(event) {
 }
 
 exports.handler = async (event) => {
+  // Connect Lambda environment to Netlify Blobs
+  connectLambda(event);
+
   const httpMethod = event.httpMethod || 'GET';
   const route = getRoute(event);
 
