@@ -622,18 +622,18 @@
     downloadFileList.innerHTML = '';
     
     const files = data.files || [];
-    files.forEach(file => {
+    files.forEach((file, index) => {
       const li = document.createElement('li');
       li.className = 'download-file-item';
       
-      const ext = getFileExtension(file.name);
+      const fileId = (file.id !== undefined && file.id !== null) ? file.id : index;
       
       li.innerHTML = `
         <div class="download-file-info">
           <div class="download-file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
           <div class="download-file-size">${formatSize(file.size)}</div>
         </div>
-        <a href="/api/download/${currentDownloadCode}/${file.id || escapeHtml(file.name)}" class="download-file-btn" download="${escapeHtml(file.name)}" target="_blank">
+        <a href="/api/download/${currentDownloadCode}/${fileId}" class="download-file-btn" download="${escapeHtml(file.name)}" target="_blank">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -647,7 +647,20 @@
   }
 
   function downloadAll() {
-    window.location.href = `/api/download/${currentDownloadCode}`;
+    const links = downloadFileList.querySelectorAll('.download-file-btn');
+    if (links.length === 0) return;
+
+    links.forEach((link, idx) => {
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = link.href;
+        a.download = link.getAttribute('download') || '';
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }, idx * 800);
+    });
   }
 
   // --- Utilities ---

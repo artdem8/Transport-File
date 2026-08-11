@@ -14,7 +14,7 @@ function generateCode() {
 // Always create a fresh store handle per invocation — do NOT cache across invocations
 function getTransferStore() {
   try {
-    return getStore('transfers');
+    return getStore({ name: 'transfers', consistency: 'strong' });
   } catch (err) {
     console.error('[BLOBS] getStore failed:', err.message);
     return null;
