@@ -156,9 +156,14 @@
             </div>
 
             <div class="qr-container" id="qrContainer">
-              <p class="qr-label">Or scan this QR code</p>
+              <p class="qr-label">Scan with phone camera or click link below</p>
               <div class="qr-wrapper" id="qrWrapper">
-                <img id="qrImage" alt="QR Code for download">
+                <a id="qrLink" href="#" target="_blank" title="Click to open download page">
+                  <img id="qrImage" alt="QR Code for download">
+                </a>
+              </div>
+              <div style="margin-top: 12px;">
+                <a id="directLink" href="#" target="_blank" style="color: var(--accent-blue-light); font-size: 0.85rem; font-weight: 500; word-break: break-all; text-decoration: underline;"></a>
               </div>
             </div>
 

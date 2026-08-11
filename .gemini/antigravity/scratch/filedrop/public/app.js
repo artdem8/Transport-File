@@ -314,20 +314,20 @@
     progressSpeed.textContent = '';
   }
 
-  function showUploadError(diagnosticMessage) {
+  function showUploadError(humanMessage, techDetails) {
     progressContainer.classList.add('hidden');
     resultContainer.classList.add('hidden');
     dropZone.classList.add('hidden');
     fileListContainer.classList.add('hidden');
 
     if (uploadErrorContainer && uploadErrorText) {
-      uploadErrorText.textContent = diagnosticMessage;
+      uploadErrorText.innerHTML = `<strong style="font-size:1rem;color:#fbbf24;">${escapeHtml(humanMessage)}</strong>\n\n<span style="color:#94a3b8;font-size:0.8rem;">Technical details:</span>\n${escapeHtml(techDetails)}`;
       uploadErrorContainer.classList.remove('hidden');
     } else {
-      alert(diagnosticMessage);
+      alert(humanMessage);
       restoreUploadUI();
     }
-    showToast('Upload failed! Check error details below.');
+    showToast('Upload failed!');
   }
 
   const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks to bypass Netlify's 6MB payload limit
@@ -435,18 +435,25 @@
         downloadUrl: `${window.location.origin}/?code=${code}`
       });
     } catch (err) {
-      let diag = `[Upload Error: ${err.message || 'Error'}]\nURL: ${API_BASE || window.location.origin}/api/upload-chunk\n`;
+      let humanMsg = 'Something went wrong while uploading your files. Please try again.';
+      let tech = `Error: ${err.message || 'Unknown'}\nURL: ${API_BASE || window.location.origin}/api/upload-chunk`;
       if (err.status === 413) {
-        diag += `\nNETLIFY LIMIT DIAGNOSIS:\nHTTP 413 Payload Too Large.\n`;
+        humanMsg = 'Your files are too large for this server. Try smaller files or fewer at once.';
+        tech += `\nHTTP 413 Payload Too Large`;
+      } else if (err.status === 500) {
+        humanMsg = 'The server had an internal error. Please wait a moment and try again.';
+        tech += `\nHTTP ${err.status} ${err.statusText}`;
       } else if (err.status) {
-        diag += `\nHTTP Status: ${err.status} ${err.statusText}\n`;
+        humanMsg = `The server rejected the upload (error ${err.status}). Please try again.`;
+        tech += `\nHTTP ${err.status} ${err.statusText}`;
       } else {
-        diag += `\nDIAGNOSIS: Serverless chunk upload error.\n`;
+        humanMsg = 'Could not connect to the server. Check your internet connection and try again.';
+        tech += `\nNetwork error or server unreachable`;
       }
       if (err.serverMsg) {
-        diag += `\nServer Message: ${err.serverMsg}\n`;
+        tech += `\nServer: ${err.serverMsg}`;
       }
-      showUploadError(diag);
+      showUploadError(humanMsg, tech);
     }
   }
 
@@ -460,49 +467,67 @@
     metaFiles.textContent = `${data.fileCount} file${data.fileCount > 1 ? 's' : ''}`;
     metaExpiry.textContent = 'Expires in 24 hours';
 
-    // Generate QR code with absolute URL scheme for mobile cameras
-    const rawUrl = data.downloadUrl || `/?code=${data.code}`;
-    const downloadUrl = rawUrl.startsWith('http') ? rawUrl : `${window.location.origin}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`;
+    // Build absolute download URL for QR code
+    const downloadUrl = `${window.location.origin}/?code=${data.code}`;
     
+    const qrLink = document.getElementById('qrLink');
+    const directLink = document.getElementById('directLink');
+    if (qrLink) qrLink.href = downloadUrl;
+    if (directLink) {
+      directLink.href = downloadUrl;
+      directLink.textContent = downloadUrl;
+    }
+
     document.getElementById('qrContainer').classList.remove('hidden');
 
+    // Generate QR code image
     try {
-      if (typeof QRCode !== 'undefined' && QRCode.toDataURL) {
-        const result = QRCode.toDataURL(downloadUrl, {
-          width: 280,
-          margin: 2,
-          color: { dark: '#000000', light: '#FFFFFF' },
-          errorCorrectionLevel: 'M'
-        });
-        
-        if (result && typeof result.then === 'function') {
-          result.then(url => { qrImage.src = url; })
-                .catch(err => {
-                  console.error('QR Error:', err);
-                  document.getElementById('qrContainer').classList.add('hidden');
-                });
-        } else if (typeof result === 'string') {
-          qrImage.src = result;
-        } else {
+      if (typeof QRCode !== 'undefined') {
+        // The CDN qrcode library supports both toDataURL and toCanvas
+        if (typeof QRCode.toDataURL === 'function') {
           QRCode.toDataURL(downloadUrl, {
             width: 280,
             margin: 2,
-            color: { dark: '#000000', light: '#FFFFFF' },
+            color: { dark: '#000000', light: '#ffffff' },
             errorCorrectionLevel: 'M'
-          }, (err, url) => {
+          }, function(err, url) {
             if (err) {
-              console.error('QR Error:', err);
-              document.getElementById('qrContainer').classList.add('hidden');
+              console.error('QR toDataURL error:', err);
+              // Fallback: try toCanvas
+              generateQRFallback(downloadUrl);
             } else {
               qrImage.src = url;
             }
           });
+        } else if (typeof QRCode.toCanvas === 'function') {
+          generateQRFallback(downloadUrl);
+        } else {
+          console.warn('QRCode loaded but no toDataURL or toCanvas method found. Methods:', Object.keys(QRCode));
+          document.getElementById('qrContainer').classList.add('hidden');
         }
       } else {
+        console.warn('QRCode library not loaded');
         document.getElementById('qrContainer').classList.add('hidden');
       }
     } catch (qrErr) {
       console.error('QR generation failed:', qrErr);
+      document.getElementById('qrContainer').classList.add('hidden');
+    }
+  }
+
+  function generateQRFallback(url) {
+    try {
+      const canvas = document.createElement('canvas');
+      QRCode.toCanvas(canvas, url, { width: 280, margin: 2 }, function(err) {
+        if (err) {
+          console.error('QR toCanvas error:', err);
+          document.getElementById('qrContainer').classList.add('hidden');
+        } else {
+          qrImage.src = canvas.toDataURL();
+        }
+      });
+    } catch (e) {
+      console.error('QR fallback error:', e);
       document.getElementById('qrContainer').classList.add('hidden');
     }
   }
@@ -558,18 +583,25 @@
         downloadResult.classList.add('hidden');
         errorContainer.classList.remove('hidden');
         
-        let diag = `[Transfer Fetch Failed: ${err.message || 'Error'}]\nCode: ${code}\nURL: ${window.location.origin}/api/info/${code}\n`;
+        let humanMsg = 'Something went wrong. Please try again.';
+        let tech = `Error: ${err.message || 'Unknown'}\nCode: ${code}\nURL: ${window.location.origin}/api/info/${code}`;
         if (err.status === 404) {
-          diag += `\nNETLIFY / HOST DIAGNOSIS:\nHTTP 404 Not Found!\nTransfer code '${code}' was not found, OR the server.js backend is not running on Netlify.\n`;
+          humanMsg = `Transfer code "${code}" was not found. It may have expired or doesn't exist. Double-check the code and try again.`;
+          tech += `\nHTTP 404 Not Found`;
+        } else if (err.status === 500) {
+          humanMsg = 'The server had an internal error. Please wait a moment and try again.';
+          tech += `\nHTTP ${err.status} ${err.statusText}`;
         } else if (err.status) {
-          diag += `\nHTTP Status: ${err.status} ${err.statusText}\n`;
+          humanMsg = `Server error (${err.status}). Please try again.`;
+          tech += `\nHTTP ${err.status} ${err.statusText}`;
         } else {
-          diag += `\nDIAGNOSIS: Network error / Server unreachable.\nNode.js server.js is not active.\n`;
+          humanMsg = 'Could not connect to the server. Check your internet and try again.';
+          tech += `\nNetwork error or server unreachable`;
         }
         if (err.serverMsg && !err.serverMsg.toLowerCase().includes('<!doctype html')) {
-          diag += `\nServer Message: ${err.serverMsg}\n`;
+          tech += `\nServer: ${err.serverMsg}`;
         }
-        errorText.textContent = diag;
+        errorText.innerHTML = `<strong style="font-size:1rem;color:#fbbf24;">${escapeHtml(humanMsg)}</strong>\n\n<span style="color:#94a3b8;font-size:0.8rem;">Technical details:</span>\n${escapeHtml(tech)}`;
       })
       .finally(() => {
         fetchBtn.disabled = false;
