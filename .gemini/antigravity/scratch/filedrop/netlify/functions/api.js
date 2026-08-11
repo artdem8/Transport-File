@@ -2,8 +2,9 @@ const Busboy = require('busboy');
 const crypto = require('crypto');
 const { getStore } = require('@netlify/blobs');
 
-// Fallback memory store when running without Netlify Blobs
+// Fallback memory store when running locally
 const memoryTransfers = new Map();
+const memoryChunks = new Map();
 
 function getTransferStore() {
   try {
@@ -78,7 +79,103 @@ exports.handler = async (event, context) => {
     return { statusCode: 200, headers, body: '' };
   }
 
-  // Route: POST /api/upload (or /.netlify/functions/api/upload)
+  // Route: POST /api/upload-chunk (Chunked upload for large files on Netlify)
+  if (httpMethod === 'POST' && (path.endsWith('/upload-chunk') || path.includes('/upload-chunk'))) {
+    try {
+      let bodyData = {};
+      try {
+        bodyData = JSON.parse(event.body || '{}');
+      } catch (_) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid JSON payload' }) };
+      }
+
+      let code = (bodyData.code || '').toUpperCase();
+      if (!code) {
+        code = generateCode();
+      }
+
+      const fileIndex = bodyData.fileIndex || 0;
+      const fileName = bodyData.fileName || 'file';
+      const fileSize = bodyData.fileSize || 0;
+      const mimeType = bodyData.mimeType || 'application/octet-stream';
+      const chunkIndex = bodyData.chunkIndex || 0;
+      const totalChunks = bodyData.totalChunks || 1;
+      const chunkDataBase64 = bodyData.chunkData || '';
+
+      if (!chunkDataBase64) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: 'Missing chunkData' }) };
+      }
+
+      const store = getTransferStore();
+      const chunkKey = `${code}_f${fileIndex}_c${chunkIndex}`;
+
+      if (store) {
+        await store.set(chunkKey, chunkDataBase64);
+      } else {
+        memoryChunks.set(chunkKey, chunkDataBase64);
+      }
+
+      // Update transfer metadata
+      let metaRecord = null;
+      if (store) {
+        metaRecord = await store.get(code, { type: 'json' });
+      } else {
+        metaRecord = memoryTransfers.get(code);
+      }
+
+      if (!metaRecord) {
+        metaRecord = {
+          code,
+          files: [],
+          totalFilesExpected: bodyData.totalFiles || 1,
+          createdAt: Date.now()
+        };
+      }
+
+      // Find or add file entry in metaRecord
+      let fEntry = metaRecord.files.find(f => f.id === fileIndex);
+      if (!fEntry) {
+        fEntry = {
+          id: fileIndex,
+          name: fileName,
+          size: fileSize,
+          mimeType: mimeType,
+          totalChunks: totalChunks,
+          receivedChunks: 0
+        };
+        metaRecord.files.push(fEntry);
+      }
+      fEntry.receivedChunks = (fEntry.receivedChunks || 0) + 1;
+
+      if (store) {
+        await store.setJSON(code, metaRecord);
+      } else {
+        memoryTransfers.set(code, metaRecord);
+      }
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          success: true,
+          code,
+          fileIndex,
+          chunkIndex,
+          totalChunks,
+          receivedChunks: fEntry.receivedChunks
+        })
+      };
+    } catch (err) {
+      console.error('Chunk upload error:', err);
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({ error: 'Chunk processing failed: ' + err.message })
+      };
+    }
+  }
+
+  // Route: POST /api/upload (Fallback direct upload for small batch)
   if (httpMethod === 'POST' && (path.endsWith('/upload') || path.includes('/upload'))) {
     try {
       const files = await parseMultipart(event);
@@ -101,7 +198,8 @@ exports.handler = async (event, context) => {
           id: idx,
           name: f.originalname,
           size: f.size,
-          mimeType: f.mimetype
+          mimeType: f.mimetype,
+          totalChunks: 1
         });
         filesToStore.push({
           index: idx,
@@ -114,19 +212,14 @@ exports.handler = async (event, context) => {
       const transferData = {
         code,
         files: fileMeta,
+        fileBuffers: filesToStore,
         createdAt: Date.now()
       };
 
       if (store) {
-        await store.setJSON(code, {
-          meta: transferData,
-          fileBuffers: filesToStore
-        });
+        await store.setJSON(code, transferData);
       } else {
-        memoryTransfers.set(code, {
-          meta: transferData,
-          fileBuffers: filesToStore
-        });
+        memoryTransfers.set(code, transferData);
       }
 
       return {
@@ -158,14 +251,12 @@ exports.handler = async (event, context) => {
       let transfer = null;
 
       if (store) {
-        const data = await store.get(code, { type: 'json' });
-        if (data && data.meta) transfer = data.meta;
+        transfer = await store.get(code, { type: 'json' });
       } else {
-        const mem = memoryTransfers.get(code);
-        if (mem && mem.meta) transfer = mem.meta;
+        transfer = memoryTransfers.get(code);
       }
 
-      if (!transfer) {
+      if (!transfer || !transfer.files) {
         return {
           statusCode: 404,
           headers,
@@ -177,6 +268,7 @@ exports.handler = async (event, context) => {
         statusCode: 200,
         headers,
         body: JSON.stringify({
+          code: transfer.code,
           fileCount: transfer.files.length,
           files: transfer.files.map(f => ({
             id: f.id,
@@ -211,7 +303,7 @@ exports.handler = async (event, context) => {
         record = memoryTransfers.get(code);
       }
 
-      if (!record || !record.fileBuffers) {
+      if (!record || !record.files) {
         return {
           statusCode: 404,
           headers,
@@ -219,7 +311,7 @@ exports.handler = async (event, context) => {
         };
       }
 
-      const file = record.fileBuffers.find(f => f.index === index) || record.fileBuffers[0];
+      const file = record.files.find(f => f.id === index) || record.files[0];
       if (!file) {
         return {
           statusCode: 404,
@@ -228,24 +320,66 @@ exports.handler = async (event, context) => {
         };
       }
 
+      let fileBuffer = null;
+
+      // Check if file stored in legacy fileBuffers array
+      if (record.fileBuffers && record.fileBuffers.length > 0) {
+        const legacy = record.fileBuffers.find(f => f.index === index) || record.fileBuffers[0];
+        if (legacy && legacy.dataBase64) {
+          fileBuffer = Buffer.from(legacy.dataBase64, 'base64');
+        }
+      }
+
+      // Otherwise reassemble from chunks
+      if (!fileBuffer) {
+        const chunks = [];
+        const totalChunks = file.totalChunks || 1;
+
+        for (let c = 0; c < totalChunks; c++) {
+          const chunkKey = `${code}_f${file.id}_c${c}`;
+          let b64 = null;
+          if (store) {
+            b64 = await store.get(chunkKey);
+          } else {
+            b64 = memoryChunks.get(chunkKey);
+          }
+          if (b64) {
+            chunks.push(Buffer.from(b64, 'base64'));
+          }
+        }
+
+        if (chunks.length > 0) {
+          fileBuffer = Buffer.concat(chunks);
+        }
+      }
+
+      if (!fileBuffer) {
+        return {
+          statusCode: 404,
+          headers,
+          body: JSON.stringify({ error: 'File chunks missing or expired' })
+        };
+      }
+
       const fileHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': file.mimeType || 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
+        'Content-Length': fileBuffer.length
       };
 
       return {
         statusCode: 200,
         headers: fileHeaders,
         isBase64Encoded: true,
-        body: file.dataBase64
+        body: fileBuffer.toString('base64')
       };
     } catch (err) {
       console.error('Download error:', err);
       return {
         statusCode: 500,
         headers,
-        body: JSON.stringify({ error: 'Download failed' })
+        body: JSON.stringify({ error: 'Download failed: ' + err.message })
       };
     }
   }

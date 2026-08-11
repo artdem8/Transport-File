@@ -330,11 +330,23 @@
     showToast('Upload failed! Check error details below.');
   }
 
-  function uploadFiles() {
-    if (selectedFiles.length === 0) return;
+  const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks to bypass Netlify's 6MB payload limit
 
-    const formData = new FormData();
-    selectedFiles.forEach(file => formData.append('files', file));
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result || '';
+        const base64 = dataUrl.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function uploadFiles() {
+    if (selectedFiles.length === 0) return;
 
     dropZone.classList.add('hidden');
     fileListContainer.classList.add('hidden');
@@ -342,74 +354,100 @@
     progressContainer.classList.remove('hidden');
     resultContainer.classList.add('hidden');
 
-    const xhr = new XMLHttpRequest();
-    let startTime = Date.now();
+    progressFill.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressLabel.textContent = 'Uploading...';
+    progressSpeed.textContent = '';
 
-    xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        progressFill.style.width = percent + '%';
-        progressPercent.textContent = percent + '%';
+    let code = '';
+    const totalFiles = selectedFiles.length;
+    const totalBytes = selectedFiles.reduce((acc, f) => acc + f.size, 0);
+    let bytesUploadedOverall = 0;
+    const startTime = Date.now();
 
-        const elapsed = (Date.now() - startTime) / 1000;
-        if (elapsed > 0.5) {
-          const speed = e.loaded / elapsed;
-          progressSpeed.textContent = `${formatSize(Math.round(speed))}/s`;
-        }
+    try {
+      for (let fIdx = 0; fIdx < totalFiles; fIdx++) {
+        const file = selectedFiles[fIdx];
+        const fileSize = file.size;
+        const totalChunks = Math.ceil(fileSize / CHUNK_SIZE) || 1;
 
-        if (percent === 100) {
-          progressLabel.textContent = 'Processing...';
+        for (let cIdx = 0; cIdx < totalChunks; cIdx++) {
+          const start = cIdx * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, fileSize);
+          const chunkBlob = file.slice(start, end);
+
+          const base64Chunk = await blobToBase64(chunkBlob);
+
+          const payload = {
+            code,
+            fileIndex: fIdx,
+            totalFiles,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type || 'application/octet-stream',
+            chunkIndex: cIdx,
+            totalChunks,
+            chunkData: base64Chunk
+          };
+
+          const res = await fetch(`${API_BASE}/api/upload-chunk`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (!res.ok) {
+            let errTextStr = '';
+            try {
+              const errObj = await res.json();
+              errTextStr = errObj.error || '';
+            } catch (_) {
+              errTextStr = (await res.text()).slice(0, 200);
+            }
+            const err = new Error(`HTTP ${res.status} ${res.statusText}`);
+            err.status = res.status;
+            err.statusText = res.statusText;
+            err.serverMsg = errTextStr;
+            throw err;
+          }
+
+          const data = await res.json();
+          if (data.code) {
+            code = data.code;
+          }
+
+          bytesUploadedOverall += (end - start);
+          const percent = Math.min(100, Math.round((bytesUploadedOverall / Math.max(1, totalBytes)) * 100));
+          progressFill.style.width = percent + '%';
+          progressPercent.textContent = percent + '%';
+
+          const elapsed = (Date.now() - startTime) / 1000;
+          if (elapsed > 0.5) {
+            const speed = bytesUploadedOverall / elapsed;
+            progressSpeed.textContent = `${formatSize(Math.round(speed))}/s (${fIdx + 1}/${totalFiles} files)`;
+          }
         }
       }
-    });
 
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 200) {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          showResult(data);
-        } catch (parseError) {
-          let diag = `[Upload Error: Invalid JSON Response]\n`;
-          diag += `HTTP Status: ${xhr.status} ${xhr.statusText}\n`;
-          if (xhr.responseText && xhr.responseText.toLowerCase().includes('<!doctype html')) {
-            diag += `\nNETLIFY DIAGNOSIS:\nServer returned an HTML page instead of JSON API response.\nWhen published on Netlify static hosting, API route '${API_BASE}/api/upload' returns Netlify's default 404 HTML page because Node.js 'server.js' is NOT running on Netlify.\n`;
-          } else {
-            diag += `\nResponse Body Snippet:\n${(xhr.responseText || '').slice(0, 300)}\n`;
-          }
-          showUploadError(diag);
-        }
+      showResult({
+        code,
+        fileCount: totalFiles,
+        downloadUrl: `/?code=${code}`
+      });
+    } catch (err) {
+      let diag = `[Upload Error: ${err.message || 'Error'}]\nURL: ${API_BASE || window.location.origin}/api/upload-chunk\n`;
+      if (err.status === 413) {
+        diag += `\nNETLIFY LIMIT DIAGNOSIS:\nHTTP 413 Payload Too Large.\n`;
+      } else if (err.status) {
+        diag += `\nHTTP Status: ${err.status} ${err.statusText}\n`;
       } else {
-        let diag = `[Upload Failed: HTTP ${xhr.status} ${xhr.statusText || 'Error'}]\nURL: ${API_BASE || window.location.origin}/api/upload\n`;
-        if (xhr.status === 404) {
-          diag += `\nNETLIFY / HOST DIAGNOSIS:\nHTTP 404 Not Found!\nNetlify only hosts static files and does NOT run Node.js 'server.js'. The backend API endpoint '/api/upload' does not exist on Netlify.\n\nHOW TO FIX:\n1. Host the backend on Render.com, Railway.app, or Fly.io\n2. Set window.API_BASE_URL to your live backend URL.\n`;
-        } else if (xhr.status === 413) {
-          diag += `\nNETLIFY LIMIT DIAGNOSIS:\nHTTP 413 Payload Too Large!\nNetlify enforces a hard ~6MB upload body limit on all incoming requests to Netlify domain names.\n\nTO UPLOAD LARGE FILES:\nDeploy server.js to a Node server host like Render.com, Railway.app, or Fly.io (which support up to 500MB+ uploads), then set window.API_BASE_URL to your live server URL.\n`;
-        } else if (xhr.status === 500) {
-          diag += `\nDIAGNOSIS: Internal Server Error (500).\nThe backend server encountered an exception while receiving uploads.\n`;
-        }
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          if (errData && errData.error) {
-            diag += `\nServer Error Message: ${errData.error}\n`;
-          }
-        } catch (_) {
-          const snippet = (xhr.responseText || '').trim().slice(0, 300);
-          if (snippet && !snippet.toLowerCase().includes('<!doctype html')) {
-            diag += `\nResponse details:\n${snippet}\n`;
-          }
-        }
-        showUploadError(diag);
+        diag += `\nDIAGNOSIS: Serverless chunk upload error.\n`;
       }
-    });
-
-    xhr.addEventListener('error', () => {
-      let diag = `[Network Error / Connection Refused]\nTarget: ${API_BASE || window.location.origin}/api/upload\n`;
-      diag += `\nNETLIFY / HOST DIAGNOSIS:\nFailed to reach the upload backend.\nIf published on Netlify, Netlify only hosts static HTML/CSS/JS files and cannot execute server.js.\n\nTo use this app online:\n- Deploy server.js to a Node server host like Render, Railway, or Fly.io.\n- Set window.API_BASE_URL to your live server URL.\n`;
+      if (err.serverMsg) {
+        diag += `\nServer Message: ${err.serverMsg}\n`;
+      }
       showUploadError(diag);
-    });
-
-    xhr.open('POST', `${API_BASE}/api/upload`);
-    xhr.send(formData);
+    }
   }
 
   function showResult(data) {
