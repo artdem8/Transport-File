@@ -432,7 +432,7 @@
       showResult({
         code,
         fileCount: totalFiles,
-        downloadUrl: `/?code=${code}`
+        downloadUrl: `${window.location.origin}/?code=${code}`
       });
     } catch (err) {
       let diag = `[Upload Error: ${err.message || 'Error'}]\nURL: ${API_BASE || window.location.origin}/api/upload-chunk\n`;
@@ -460,8 +460,12 @@
     metaFiles.textContent = `${data.fileCount} file${data.fileCount > 1 ? 's' : ''}`;
     metaExpiry.textContent = 'Expires in 24 hours';
 
-    // Generate QR code
-    const downloadUrl = data.downloadUrl || `${window.location.origin}/?code=${data.code}`;
+    // Generate QR code with absolute URL scheme for mobile cameras
+    const rawUrl = data.downloadUrl || `/?code=${data.code}`;
+    const downloadUrl = rawUrl.startsWith('http') ? rawUrl : `${window.location.origin}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`;
+    
+    document.getElementById('qrContainer').classList.remove('hidden');
+
     try {
       if (typeof QRCode !== 'undefined' && QRCode.toDataURL) {
         const result = QRCode.toDataURL(downloadUrl, {

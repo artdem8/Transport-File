@@ -6,11 +6,21 @@ const { getStore } = require('@netlify/blobs');
 const memoryTransfers = new Map();
 const memoryChunks = new Map();
 
+let blobStore = null;
+
 function getTransferStore() {
+  if (blobStore) return blobStore;
   try {
-    return getStore('transfers');
-  } catch (_) {
-    return null;
+    blobStore = getStore({ name: 'transfers', consistency: 'strong' });
+    return blobStore;
+  } catch (err1) {
+    try {
+      blobStore = getStore('transfers');
+      return blobStore;
+    } catch (err2) {
+      console.error('Netlify Blobs store initialization error:', err2.message || err2);
+      return null;
+    }
   }
 }
 
