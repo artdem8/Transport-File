@@ -14,7 +14,11 @@ function generateCode() {
 // Always create a fresh store handle per invocation — do NOT cache across invocations
 function getTransferStore() {
   try {
-    return getStore({ name: 'transfers', consistency: 'strong' });
+    return getStore({
+      name: 'transfers',
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_API_TOKEN
+    });
   } catch (err) {
     console.error('[BLOBS] getStore failed:', err.message);
     return null;
@@ -23,7 +27,11 @@ function getTransferStore() {
 
 function getChunkStore() {
   try {
-    return getStore('chunks');
+    return getStore({
+      name: 'chunks',
+      siteID: process.env.NETLIFY_SITE_ID,
+      token: process.env.NETLIFY_API_TOKEN
+    });
   } catch (err) {
     console.error('[BLOBS] getStore(chunks) failed:', err.message);
     return null;
@@ -35,10 +43,8 @@ function getChunkStore() {
 // event.path might be "/api/info/ABC123" or "/.netlify/functions/api/info/ABC123"
 function getRoute(event) {
   const path = event.path || '';
-  // Try to extract after /api/
   const apiMatch = path.match(/\/api\/(.+)/);
   if (apiMatch) return apiMatch[1];
-  // Fallback: try rawUrl
   const rawUrl = event.rawUrl || '';
   const urlMatch = rawUrl.match(/\/api\/(.+)/);
   if (urlMatch) return urlMatch[1];
@@ -46,7 +52,6 @@ function getRoute(event) {
 }
 
 exports.handler = async (event) => {
-  // Connect Lambda environment to Netlify Blobs
   connectLambda(event);
 
   const httpMethod = event.httpMethod || 'GET';
@@ -54,7 +59,6 @@ exports.handler = async (event) => {
 
   console.log(`[API] ${httpMethod} route="${route}" path="${event.path}"`);
 
-  // CORS headers
   const headers = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -107,12 +111,10 @@ exports.handler = async (event) => {
         };
       }
 
-      // Store chunk data
       const chunkKey = `${code}_f${fileIndex}_c${chunkIndex}`;
       await chunkStore.set(chunkKey, chunkDataBase64);
       console.log(`[UPLOAD] Stored chunk: ${chunkKey} (${chunkDataBase64.length} chars)`);
 
-      // Update transfer metadata
       let metaRecord = null;
       try {
         metaRecord = await metaStore.get(code, { type: 'json' });
@@ -129,7 +131,6 @@ exports.handler = async (event) => {
         };
       }
 
-      // Find or add file entry
       let fEntry = metaRecord.files.find(f => f.id === fileIndex);
       if (!fEntry) {
         fEntry = {
@@ -187,11 +188,7 @@ exports.handler = async (event) => {
 
       const metaStore = getTransferStore();
       if (!metaStore) {
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: 'Storage unavailable' })
-        };
+        return { statusCode: 500, headers, body: JSON.stringify({ error: 'Storage unavailable' }) };
       }
 
       let transfer = null;
@@ -221,11 +218,7 @@ exports.handler = async (event) => {
         body: JSON.stringify({
           code: transfer.code,
           fileCount: transfer.files.length,
-          files: transfer.files.map(f => ({
-            id: f.id,
-            name: f.name,
-            size: f.size
-          }))
+          files: transfer.files.map(f => ({ id: f.id, name: f.name, size: f.size }))
         })
       };
     } catch (err) {
@@ -264,23 +257,14 @@ exports.handler = async (event) => {
       }
 
       if (!record || !record.files) {
-        return {
-          statusCode: 404,
-          headers,
-          body: JSON.stringify({ error: 'Transfer not found or expired' })
-        };
+        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Transfer not found or expired' }) };
       }
 
       const file = record.files.find(f => f.id === index) || record.files[0];
       if (!file) {
-        return {
-          statusCode: 404,
-          headers,
-          body: JSON.stringify({ error: 'File not found in transfer' })
-        };
+        return { statusCode: 404, headers, body: JSON.stringify({ error: 'File not found in transfer' }) };
       }
 
-      // Reassemble file from chunks
       const chunks = [];
       const totalChunks = file.totalChunks || 1;
 
@@ -298,11 +282,7 @@ exports.handler = async (event) => {
       }
 
       if (chunks.length === 0) {
-        return {
-          statusCode: 404,
-          headers,
-          body: JSON.stringify({ error: 'File data missing or expired' })
-        };
+        return { statusCode: 404, headers, body: JSON.stringify({ error: 'File data missing or expired' }) };
       }
 
       const fileBuffer = Buffer.concat(chunks);
@@ -321,11 +301,7 @@ exports.handler = async (event) => {
       };
     } catch (err) {
       console.error('[DOWNLOAD] Error:', err);
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: 'Download failed: ' + err.message })
-      };
+      return { statusCode: 500, headers, body: JSON.stringify({ error: 'Download failed: ' + err.message }) };
     }
   }
 
@@ -351,11 +327,7 @@ exports.handler = async (event) => {
         })
       };
     } catch (err) {
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ message: 'API running but stores failed', error: err.message })
-      };
+      return { statusCode: 200, headers, body: JSON.stringify({ message: 'API running but stores failed', error: err.message }) };
     }
   }
 
@@ -363,11 +335,6 @@ exports.handler = async (event) => {
   return {
     statusCode: 404,
     headers,
-    body: JSON.stringify({
-      error: 'API route not found',
-      route: route,
-      path: event.path,
-      method: httpMethod
-    })
+    body: JSON.stringify({ error: 'API route not found', route: route, path: event.path, method: httpMethod })
   };
 };

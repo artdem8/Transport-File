@@ -151,7 +151,14 @@
     if (uploadErrorContainer) uploadErrorContainer.classList.add('hidden');
   }
 
+  let objectUrls = [];
+  function cleanObjectUrls() {
+    objectUrls.forEach(url => URL.revokeObjectURL(url));
+    objectUrls = [];
+  }
+
   function renderFileList() {
+    cleanObjectUrls();
     fileList.innerHTML = '';
     selectedFiles.forEach((file, index) => {
       const li = document.createElement('li');
@@ -161,8 +168,15 @@
       const iconType = getFileIconType(file.type);
       const ext = getFileExtension(file.name);
 
+      let iconHtml = `<div class="file-item-icon ${iconType}">${ext}</div>`;
+      if (iconType === 'image') {
+        const url = URL.createObjectURL(file);
+        objectUrls.push(url);
+        iconHtml = `<img src="${url}" class="file-item-icon" style="object-fit: cover; border: 1px solid var(--border-medium);" alt="">`;
+      }
+
       li.innerHTML = `
-        <div class="file-item-icon ${iconType}">${ext}</div>
+        ${iconHtml}
         <div class="file-item-info">
           <div class="file-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
           <div class="file-item-size">${formatSize(file.size)}</div>

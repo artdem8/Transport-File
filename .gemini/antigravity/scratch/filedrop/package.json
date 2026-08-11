@@ -2,12 +2,11 @@
   "name": "filedrop",
   "version": "1.0.0",
   "description": "Instant file transfer between devices",
-  "main": "server.js",
+  "main": "netlify/functions/api.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "netlify dev"
   },
   "dependencies": {
-    "@netlify/blobs": "^8.0.0"
+    "@netlify/blobs": "7.4.0"
   }
 }
