@@ -1,0 +1,16 @@
+{
+  "name": "filedrop",
+  "version": "1.0.0",
+  "description": "Instant file transfer between devices",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0",
+    "express": "^4.18.0",
+    "multer": "^1.4.5-lts.1",
+    "serverless-http": "^3.2.0"
+  }
+}
